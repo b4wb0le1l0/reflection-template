@@ -1,11 +1,15 @@
 package org.example.classes;
 
+import org.example.generator.Generatable;
+
+@Generatable
 public class BinaryTreeNode {
     private Integer data;
     private BinaryTreeNode left;
     private BinaryTreeNode right;
 
-    public BinaryTreeNode(Integer data, BinaryTreeNode left, BinaryTreeNode right) {
+    public BinaryTreeNode(Integer data, @Generatable(nullable = true) BinaryTreeNode left,
+                          @Generatable(nullable = true) BinaryTreeNode right) {
         this.data = data;
         this.left = left;
         this.right = right;
