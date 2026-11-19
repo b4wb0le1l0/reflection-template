@@ -37,7 +37,42 @@ class GeneratorTest {
     @Generatable
     public static class Dog extends Animal { public Dog() {} }
 
-    public static class Unmarked { public Unmarked() {} }
+    public static class Unmarked {
+        final String name;
+
+        public Unmarked(String name) {
+            this.name = name;
+        }
+    }
+
+    public static class Overloaded {
+        final String name;
+
+        public Overloaded(String name, Set<String> tags) {
+            throw new AssertionError("Unsupported arguments should skip this constructor");
+        }
+
+        public Overloaded(String name) {
+            this.name = name;
+        }
+    }
+
+    public static class RejectingOverload {
+        final int value;
+
+        public RejectingOverload(int value, int other) {
+            throw new IllegalArgumentException("Two arguments are not accepted");
+        }
+
+        public RejectingOverload(int value) {
+            this.value = value;
+        }
+    }
+
+    public static class NoUsableOverload {
+        public NoUsableOverload(Set<String> tags) {}
+        public NoUsableOverload(Loop loop) {}
+    }
     @Generatable
     public static class PrivateOnly { private PrivateOnly() {} }
     @Generatable
@@ -45,8 +80,8 @@ class GeneratorTest {
     @Generatable(implementations = Person.class)
     public interface WrongImplementation {}
     @Generatable(implementations = UnmarkedChild.class)
-    public interface MissingMarker {}
-    public static class UnmarkedChild implements MissingMarker { public UnmarkedChild() {} }
+    public interface WithUnmarkedImplementation {}
+    public static class UnmarkedChild implements WithUnmarkedImplementation { public UnmarkedChild() {} }
 
     @Generatable
     public static class Loop { public Loop(Loop child) {} }
@@ -56,7 +91,39 @@ class GeneratorTest {
     }
     @Generatable
     public static class Crash {
-        public Crash() { throw new IllegalStateException("Constructor bug"); }
+        public Crash() {}
+        public Crash(int value) { throw new IllegalStateException("Constructor bug"); }
+    }
+
+    @Test
+    void generatesConcreteClassesWithoutAnnotation() {
+        Unmarked result = (Unmarked) generator.generateValueOfType(Unmarked.class);
+        assertTrue(result.name.matches("[a-z]{3,10}"));
+        assertInstanceOf(UnmarkedChild.class, generator.generateValueOfType(WithUnmarkedImplementation.class));
+    }
+
+    @Test
+    void triesAnotherConstructorWhenArgumentsAreUnsupported() {
+        Overloaded result = (Overloaded) generator.generateValueOfType(Overloaded.class);
+        assertTrue(result.name.matches("[a-z]{3,10}"));
+    }
+
+    @Test
+    void triesAnotherConstructorAfterRejectedValues() {
+        RejectingOverload result = (RejectingOverload)
+                generator.generateValueOfType(RejectingOverload.class);
+        assertTrue(result.value >= 1 && result.value <= 100);
+    }
+
+    @Test
+    void reportsEachFailureWhenNoConstructorWorks() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> generator.generateValueOfType(NoUsableOverload.class));
+        assertTrue(error.getMessage().contains("No usable public constructor"));
+        assertEquals(2, error.getSuppressed().length);
+        for (Throwable failure : error.getSuppressed()) {
+            assertNotNull(failure.getCause());
+        }
     }
 
     @Test
@@ -173,9 +240,9 @@ class GeneratorTest {
 
     @Test
     void unsupportedRequestsExplainFailure() {
-        for (Class<?> type : new Class<?>[]{Unmarked.class, PrivateOnly.class,
-                NoImplementation.class, WrongImplementation.class, MissingMarker.class,
-                Loop.class, Empty.class, void.class, Set.class}) {
+        for (Class<?> type : new Class<?>[]{PrivateOnly.class,
+                NoImplementation.class, WrongImplementation.class,
+                Loop.class, Empty.class, void.class, Void.class, Set.class}) {
             IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                     () -> generator.generateValueOfType(type));
             assertFalse(error.getMessage().isBlank());

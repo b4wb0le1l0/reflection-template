@@ -8,6 +8,8 @@ import java.lang.reflect.Parameter;
 import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.Type;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -17,6 +19,16 @@ public class Generator {
     private static final int MAX_DEPTH = 4;
     private static final int MAX_ATTEMPTS = 100;
     private final Random random;
+
+    private static class GenerationFailure extends IllegalArgumentException {
+        GenerationFailure(String message) {
+            super(message);
+        }
+
+        GenerationFailure(String message, Throwable cause) {
+            super(message, cause);
+        }
+    }
 
     public Generator() {
         random = new Random();
@@ -35,7 +47,7 @@ public class Generator {
 
     private Object generate(Type type, int depth) {
         if (depth > MAX_DEPTH) {
-            throw new IllegalArgumentException("Maximum nesting depth exceeded for " + type);
+            throw new GenerationFailure("Maximum nesting depth exceeded for " + type);
         }
 
         // only List<T> and Map<K, V> supported parameterized types
@@ -47,10 +59,10 @@ public class Generator {
             if (generic.getRawType() == Map.class) {
                 return makeMap(arguments[0], arguments[1], depth);
             }
-            throw new IllegalArgumentException("Unsupported generic type: " + type);
+            throw new GenerationFailure("Unsupported generic type: " + type);
         }
         if (!(type instanceof Class<?> clazz)) {
-            throw new IllegalArgumentException("Unsupported type: " + type);
+            throw new GenerationFailure("Unsupported type: " + type);
         }
 
         if (clazz == int.class || clazz == Integer.class) return random.nextInt(100) + 1;
@@ -72,7 +84,7 @@ public class Generator {
         if (clazz.isEnum()) {
             Object[] values = clazz.getEnumConstants();
             if (values.length == 0) {
-                throw new IllegalArgumentException("Empty enum: " + clazz.getName());
+                throw new GenerationFailure("Empty enum: " + clazz.getName());
             }
             return values[random.nextInt(values.length)];
         }
@@ -88,21 +100,23 @@ public class Generator {
         if (clazz == List.class) return makeList(String.class, depth);
         if (clazz == Map.class) return makeMap(String.class, Integer.class, depth);
 
-        Generatable annotation = clazz.getDeclaredAnnotation(Generatable.class);
-        if (annotation == null) {
-            throw new IllegalArgumentException("Missing @Generatable on " + clazz.getName());
+        if (clazz == void.class || clazz == Void.class) {
+            throw new GenerationFailure("Unsupported type: " + clazz.getName());
         }
         if (clazz.isInterface() || Modifier.isAbstract(clazz.getModifiers())) {
+            Generatable annotation = clazz.getDeclaredAnnotation(Generatable.class);
+            if (annotation == null) {
+                throw new GenerationFailure("Missing @Generatable on " + clazz.getName());
+            }
             Class<?>[] implementations = annotation.implementations();
             if (implementations.length == 0) {
-                throw new IllegalArgumentException("No implementations for " + clazz.getName());
+                throw new GenerationFailure("No implementations for " + clazz.getName());
             }
             for (Class<?> implementation : implementations) {
                 if (!clazz.isAssignableFrom(implementation)
                         || implementation.isInterface()
-                        || Modifier.isAbstract(implementation.getModifiers())
-                        || implementation.getDeclaredAnnotation(Generatable.class) == null) {
-                    throw new IllegalArgumentException("Invalid implementation " + implementation.getName()
+                        || Modifier.isAbstract(implementation.getModifiers())) {
+                    throw new GenerationFailure("Invalid implementation " + implementation.getName()
                             + " for " + clazz.getName());
                 }
             }
@@ -130,27 +144,40 @@ public class Generator {
     }
 
     private Object makeObject(Class<?> clazz, int depth) {
-        Constructor<?> selected = null;
-        for (Constructor<?> constructor : clazz.getConstructors()) {
-            if (selected == null || constructor.getParameterCount() > selected.getParameterCount()
-                    || (constructor.getParameterCount() == selected.getParameterCount()
-                    && constructor.toString().compareTo(selected.toString()) < 0)) {
-                selected = constructor;
+        Constructor<?>[] constructors = clazz.getConstructors();
+        if (constructors.length == 0) {
+            throw new GenerationFailure("No public constructor for " + clazz.getName());
+        }
+        Arrays.sort(constructors, Comparator
+                .<Constructor<?>>comparingInt(Constructor::getParameterCount)
+                .reversed()
+                .thenComparing(Constructor::toString));
+
+        GenerationFailure failure = new GenerationFailure("No usable public constructor for " + clazz.getName());
+        for (Constructor<?> constructor : constructors) {
+            try {
+                return tryConstructor(constructor, depth);
+            } catch (GenerationFailure e) {
+                if (constructors.length == 1) {
+                    throw e;
+                }
+                failure.addSuppressed(new GenerationFailure("Could not use " + constructor, e));
             }
         }
-        if (selected == null) {
-            throw new IllegalArgumentException("No public constructor for " + clazz.getName());
-        }
+        throw failure;
+    }
 
+    private Object tryConstructor(Constructor<?> constructor, int depth) {
+        Class<?> clazz = constructor.getDeclaringClass();
+        Parameter[] parameters = constructor.getParameters();
         Throwable lastFailure = null;
         for (int attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
-            Parameter[] parameters = selected.getParameters();
             Object[] arguments = new Object[parameters.length];
             for (int i = 0; i < parameters.length; i++) {
                 Parameter parameter = parameters[i];
                 Generatable rule = parameter.getAnnotation(Generatable.class);
                 if (rule != null && rule.nullable() && parameter.getType().isPrimitive()) {
-                    throw new IllegalArgumentException("Primitive parameter cannot be nullable: " + parameter);
+                    throw new GenerationFailure("Primitive parameter cannot be nullable: " + parameter);
                 }
                 if (rule != null && rule.nullable() && depth >= MAX_DEPTH - 1) {
                     arguments[i] = null;
@@ -159,18 +186,18 @@ public class Generator {
                 }
             }
             try {
-                return selected.newInstance(arguments);
+                return constructor.newInstance(arguments);
             } catch (InvocationTargetException e) {
                 if (!(e.getCause() instanceof IllegalArgumentException)) {
                     throw new IllegalArgumentException("Constructor failed for " + clazz.getName(), e.getCause());
                 }
-                // constructor rejected the values, try new seat
+                // The constructor rejected these values. Try a new set.
                 lastFailure = e.getCause();
             } catch (ReflectiveOperationException e) {
-                throw new IllegalArgumentException("Cannot create " + clazz.getName(), e);
+                throw new GenerationFailure("Cannot create " + clazz.getName(), e);
             }
         }
-        throw new IllegalArgumentException("No valid arguments after " + MAX_ATTEMPTS
+        throw new GenerationFailure("No valid arguments after " + MAX_ATTEMPTS
                 + " attempts for " + clazz.getName(), lastFailure);
     }
 }
