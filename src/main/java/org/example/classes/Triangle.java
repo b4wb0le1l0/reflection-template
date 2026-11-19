@@ -1,11 +1,19 @@
 package org.example.classes;
 
+import org.example.generator.Generatable;
+
+@Generatable
 public class Triangle implements Shape {
     private double sideA;
     private double sideB;
     private double sideC;
 
     public Triangle(double sideA, double sideB, double sideC) {
+        if (!Double.isFinite(sideA) || !Double.isFinite(sideB) || !Double.isFinite(sideC)
+                || sideA <= 0 || sideB <= 0 || sideC <= 0
+                || sideA + sideB <= sideC || sideA + sideC <= sideB || sideB + sideC <= sideA) {
+            throw new IllegalArgumentException("Sides must form a valid triangle");
+        }
         this.sideA = sideA;
         this.sideB = sideB;
         this.sideC = sideC;

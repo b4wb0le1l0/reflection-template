@@ -1,17 +1,22 @@
 package org.example.classes;
 
+import org.example.generator.Generatable;
+
+@Generatable
 public class Product {
     private String name;
     private double price;
 
     public Product(String name, double price) {
+        if (name == null || name.isBlank() || !Double.isFinite(price) || price <= 0) {
+            throw new IllegalArgumentException("Product needs a name and a positive finite price");
+        }
         this.name = name;
         this.price = price;
     }
 
     public Product(String name) {
-        this.name = name;
-        this.price = Double.MIN_VALUE;
+        this(name, 1.0);
     }
 
     public String getName() {
